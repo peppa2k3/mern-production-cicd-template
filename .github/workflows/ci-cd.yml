@@ -1,0 +1,268 @@
+# ====================================================================
+# [EN] Production CI/CD for a MERN application.
+# [VI] Quy trình CI/CD cho ứng dụng MERN trên môi trường Production.
+#
+# [EN] Flow: push to main -> lint/test/build check -> Docker Buildx build+push to
+#      GHCR (immutable sha-<shortsha> tag) -> SSH deploy to the VPS -> health
+#      check -> automatic rollback on failure.
+# [VI] Luồng hoạt động: push vào main -> kiểm tra lint/test/build -> Docker Buildx build+push lên
+#      GHCR (tag bất biến sha-<shortsha>) -> SSH deploy vào VPS -> kiểm tra sức khỏe
+#      (health check) -> tự động rollback nếu thất bại.
+#
+# [EN] Designed to be reusable across projects: package manager, Node version,
+#      and workspace paths are all auto-detected or configurable via repository
+#      Variables (Settings -> Secrets and variables -> Actions -> Variables), not
+#      hard-coded. See docs/adopting-this-template.md when dropping this into a
+#      new repository.
+# [VI] Được thiết kế để tái sử dụng cho nhiều dự án: trình quản lý gói, phiên bản Node,
+#      và đường dẫn workspace đều được tự động phát hiện hoặc cấu hình qua
+#      Repository Variables (Settings -> Secrets and variables -> Actions -> Variables),
+#      không hard-code. Xem docs/adopting-this-template.md khi áp dụng vào repo mới.
+# ====================================================================
+
+name: Production CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  # [EN] Override these in repo Variables if this project's folders are named
+  #      differently (e.g. "frontend"/"backend" instead of "client"/"server").
+  # [VI] Ghi đè các giá trị này trong repo Variables nếu thư mục dự án có tên khác
+  #      (ví dụ: "frontend"/"backend" thay vì "client"/"server").
+  CLIENT_DIR: ${{ vars.CLIENT_DIR || 'client' }}
+  SERVER_DIR: ${{ vars.SERVER_DIR || 'server' }}
+  # [EN] Used only when no .nvmrc is found anywhere in the repo.
+  # [VI] Chỉ được sử dụng khi không tìm thấy file .nvmrc ở bất kỳ đâu trong repo.
+  NODE_VERSION_DEFAULT: ${{ vars.NODE_VERSION_DEFAULT || '22' }}
+
+jobs:
+  # --------------------------------------------------------------------
+  # [EN] Lint, test, and build-check both workspaces. Every step is discovered
+  #      from the actual package.json — a missing script is skipped with a
+  #      clear log line, never faked as passing.
+  # [VI] Kiểm tra lint, test và build cho cả hai workspace. Mỗi bước được tự động
+  #      phát hiện từ package.json thực tế — script còn thiếu sẽ được bỏ qua với
+  #      dòng log rõ ràng, không bao giờ giả lập thành công.
+  # --------------------------------------------------------------------
+  quality:
+    name: Lint, test & build check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve Node.js version
+        id: node
+        run: |
+          if [ -f .nvmrc ]; then
+            echo "version=$(tr -d 'v[:space:]' < .nvmrc)" >> "$GITHUB_OUTPUT"
+          elif [ -f "${SERVER_DIR}/.nvmrc" ]; then
+            echo "version=$(tr -d 'v[:space:]' < "${SERVER_DIR}/.nvmrc")" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${NODE_VERSION_DEFAULT}" >> "$GITHUB_OUTPUT"
+            echo "::notice::No .nvmrc found — using default Node ${NODE_VERSION_DEFAULT}. Set the NODE_VERSION_DEFAULT repository variable to override."
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - name: "Server: install, lint, test, build check"
+        working-directory: ${{ env.SERVER_DIR }}
+        run: |
+          set -e
+          has_script() { node -e "process.exit(require('./package.json').scripts?.['$1'] ? 0 : 1)"; }
+
+          if [ -f package-lock.json ]; then npm ci
+          elif [ -f yarn.lock ]; then yarn install --frozen-lockfile
+          elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile
+          else
+            echo "::warning::No lockfile found in ${SERVER_DIR} — falling back to 'npm install'. Commit a lockfile for reproducible builds."
+            npm install
+          fi
+
+          if has_script lint; then npm run lint
+          else echo "No 'lint' script in ${SERVER_DIR}/package.json — skipping."
+          fi
+
+          if has_script test; then npm test
+          else echo "No 'test' script in ${SERVER_DIR}/package.json — skipping."
+          fi
+
+          if has_script build; then npm run build
+          else echo "No 'build' script in ${SERVER_DIR}/package.json — plain JS backend, nothing to compile."
+          fi
+
+      - name: "Client: install, lint, test, build"
+        working-directory: ${{ env.CLIENT_DIR }}
+        run: |
+          set -e
+          has_script() { node -e "process.exit(require('./package.json').scripts?.['$1'] ? 0 : 1)"; }
+
+          if [ -f package-lock.json ]; then npm ci
+          elif [ -f yarn.lock ]; then yarn install --frozen-lockfile
+          elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile
+          else
+            echo "::warning::No lockfile found in ${CLIENT_DIR} — falling back to 'npm install'. Commit a lockfile for reproducible builds."
+            npm install
+          fi
+
+          if has_script lint; then npm run lint
+          else echo "No 'lint' script in ${CLIENT_DIR}/package.json — skipping."
+          fi
+
+          if has_script test; then npm test
+          else echo "No 'test' script in ${CLIENT_DIR}/package.json — skipping."
+          fi
+
+          # [EN] The frontend build is required (not optional) — Docker will build
+          #      it again inside its own stage, but failing fast here avoids a
+          #      slow, doomed Buildx run when the build is broken.
+          # [VI] Bước build frontend là bắt buộc (không tùy chọn) — Docker sẽ build lại
+          #      trong stage riêng, nhưng thất bại sớm ở đây giúp tránh tốn thời gian
+          #      chạy Buildx khi mã nguồn frontend bị lỗi.
+          if has_script build; then npm run build
+          else
+            echo "::error::No 'build' script in ${CLIENT_DIR}/package.json — cannot produce a production frontend bundle."
+            exit 1
+          fi
+
+  # --------------------------------------------------------------------
+  # [EN] Build both images with Buildx and push to GHCR using an immutable
+  #      sha-<shortsha> tag (plus a convenience :latest tag). Never runs for
+  #      pull_request events, so production credentials are never exposed to
+  #      untrusted PR code.
+  # [VI] Build cả hai image bằng Buildx và push lên GHCR sử dụng tag bất biến
+  #      sha-<shortsha> (cùng tag :latest tiện lợi). Không bao giờ chạy cho sự kiện
+  #      pull_request, đảm bảo thông tin xác thực production không bị lộ cho PR không tin cậy.
+  # --------------------------------------------------------------------
+  docker:
+    name: Build & push Docker images
+    needs: quality
+    runs-on: ubuntu-latest
+    if: >
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    outputs:
+      image_tag: ${{ steps.vars.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute image tag & repository name
+        id: vars
+        run: |
+          short_sha="$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          echo "image_tag=sha-${short_sha}" >> "$GITHUB_OUTPUT"
+          # [EN] GHCR requires a lowercase repository path.
+          # [VI] GHCR yêu cầu đường dẫn repository phải viết chữ thường (lowercase).
+          echo "owner_repo=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push server image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.SERVER_DIR }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_repo }}-server:${{ steps.vars.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_repo }}-server:latest
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,mode=max,scope=server
+
+      - name: Build & push client image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CLIENT_DIR }}
+          push: true
+          build-args: |
+            VITE_API_URL=${{ vars.VITE_API_URL || '/api' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_repo }}-client:${{ steps.vars.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_repo }}-client:latest
+          cache-from: type=gha,scope=client
+          cache-to: type=gha,mode=max,scope=client
+
+  # --------------------------------------------------------------------
+  # [EN] SSH into the production VPS, sync the deployment scripts + compose
+  #      file (never .env), and run deploy.sh — which validates, deploys the
+  #      immutable tag, health-checks it, and rolls back automatically on
+  #      failure. Concurrency is scoped to THIS job only, so it never blocks
+  #      PR quality checks or parallel Docker builds — only two production
+  #      deployments can never race each other.
+  # [VI] Kết nối SSH vào VPS production, đồng bộ các script deployment + file compose
+  #      (không bao gồm .env), và chạy deploy.sh — script này sẽ kiểm tra, deploy tag
+  #      bất biến, kiểm tra health-check, và tự động rollback nếu thất bại. Giới hạn
+  #      concurrency áp dụng riêng cho job NÀY, nên không làm nghẽn kiểm tra chất lượng
+  #      PR hay các build Docker song song — đảm bảo hai đợt deploy production không bao
+  #      giờ tranh chấp (race condition).
+  # --------------------------------------------------------------------
+  deploy:
+    name: Deploy to production VPS
+    needs: docker
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    concurrency:
+      group: production-deployment
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync deployment files to VPS (never .env)
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          port: ${{ secrets.VPS_PORT }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          source: "docker-compose.yml,deployment/scripts/*"
+          target: ${{ secrets.VPS_DEPLOY_PATH }}
+          strip_components: 0
+          overwrite: true
+
+      - name: Run deploy.sh on the VPS
+        uses: appleboy/ssh-action@v1.2.1
+        env:
+          DEPLOY_IMAGE_TAG: ${{ needs.docker.outputs.image_tag }}
+          DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
+          DEPLOY_COMMIT_SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          port: ${{ secrets.VPS_PORT }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          command_timeout: 15m
+          envs: DEPLOY_IMAGE_TAG,DEPLOY_PATH,DEPLOY_COMMIT_SHA
+          script: |
+            set -Eeuo pipefail
+            chmod +x "${DEPLOY_PATH}/deployment/scripts/"*.sh
+            IMAGE_TAG="${DEPLOY_IMAGE_TAG}" \
+            COMMIT_SHA="${DEPLOY_COMMIT_SHA}" \
+            DEPLOY_PATH="${DEPLOY_PATH}" \
+              "${DEPLOY_PATH}/deployment/scripts/deploy.sh"

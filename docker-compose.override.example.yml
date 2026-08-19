@@ -1,0 +1,29 @@
+# Alternative to Traefik-based routing: publish ports directly on the host.
+#
+# Use this if the VPS does NOT already run Traefik (or any other shared
+# edge proxy) as the entry point. Rename this file to
+# `docker-compose.override.yml` and it will be merged automatically by
+# `docker compose` (which reads docker-compose.yml + docker-compose.override.yml
+# together by default) — remove the `edge` network and Traefik labels from
+# the client service in docker-compose.yml when you do, since they're no
+# longer needed.
+#
+# You are then responsible for your own TLS termination in front of this
+# (e.g. a standalone Nginx + certbot, or Caddy) — this override only
+# exposes plain HTTP on the host.
+
+services:
+  client:
+    ports:
+      - "8080:80"
+    networks:
+      - internal
+    labels: []
+
+  server:
+    networks:
+      - internal
+
+networks:
+  edge:
+    external: false
