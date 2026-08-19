@@ -38,4 +38,4 @@ USER appuser
 EXPOSE 3000
 
 # Verify this matches the project's actual "scripts.start" in package.json.
-CMD ["node", "server.js"]
+CMD ["node", "src/server.js"]
