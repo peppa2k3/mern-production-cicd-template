@@ -1,8 +1,3 @@
-# ====================================================================
-# [EN] Independent CI/CD for MERN Application (Server & Client decoupled).
-# [VI] CI/CD độc lập cho MERN (Tách biệt hoàn toàn Server & Client).
-# ====================================================================
-
 name: Decoupled Multi-Env CI/CD
 
 on:
@@ -23,10 +18,6 @@ env:
   NODE_VERSION_DEFAULT: ${{ vars.NODE_VERSION_DEFAULT || '22' }}
 
 jobs:
-  # --------------------------------------------------------------------
-  # [EN] Determine deployment target environment based on git branch.
-  # [VI] Xác định môi trường deploy dựa vào branch.
-  # --------------------------------------------------------------------
   setup-env:
     name: Setup Environment
     runs-on: ubuntu-latest
@@ -44,10 +35,6 @@ jobs:
             echo "tag_prefix=dev-" >> "$GITHUB_OUTPUT"
           fi
 
-  # --------------------------------------------------------------------
-  # [EN] SERVER: Quality Checks (Independent)
-  # [VI] SERVER: Kiểm tra chất lượng độc lập
-  # --------------------------------------------------------------------
   quality-server:
     name: "Server: Quality Check"
     runs-on: ubuntu-latest
@@ -71,10 +58,6 @@ jobs:
           if has_script test; then npm test; fi
           if has_script build; then npm run build; fi
 
-  # --------------------------------------------------------------------
-  # [EN] CLIENT: Quality Checks (Independent)
-  # [VI] CLIENT: Kiểm tra chất lượng độc lập
-  # --------------------------------------------------------------------
   quality-client:
     name: "Client: Quality Check"
     runs-on: ubuntu-latest
@@ -98,10 +81,6 @@ jobs:
           if has_script test; then npm test; fi
           if has_script build; then npm run build; fi
 
-  # --------------------------------------------------------------------
-  # [EN] SERVER: Build & Push Docker Image
-  # [VI] SERVER: Build và Push Docker Image độc lập
-  # --------------------------------------------------------------------
   docker-server:
     name: "Server: Docker Build & Push"
     needs: [setup-env, quality-server]
@@ -140,10 +119,6 @@ jobs:
             ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_repo }}-server:${{ steps.vars.outputs.image_tag }}
             ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_repo }}-server:${{ steps.vars.outputs.latest_tag }}
 
-  # --------------------------------------------------------------------
-  # [EN] CLIENT: Build & Push Docker Image (Only needs VITE_API_URL)
-  # [VI] CLIENT: Build và Push Docker Image (Chỉ cần VITE_API_URL)
-  # --------------------------------------------------------------------
   docker-client:
     name: "Client: Docker Build & Push"
     needs: [setup-env, quality-client]
@@ -179,15 +154,11 @@ jobs:
           context: ${{ env.CLIENT_DIR }}
           push: true
           build-args: |
-            VITE_API_URL=${{ vars.VITE_API_URL || 'https://demo.techreview.io.vn/api' }}
+            VITE_API_URL=${{ vars.VITE_API_URL || 'https://apidemo.techreview.io.vn' }}
           tags: |
             ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_repo }}-client:${{ steps.vars.outputs.image_tag }}
             ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_repo }}-client:${{ steps.vars.outputs.latest_tag }}
 
-  # --------------------------------------------------------------------
-  # [EN] DEPLOY: Sync files & Deploy to VPS with automatic network handling
-  # [VI] DEPLOY: Đồng bộ file & Deploy lên VPS, tự động tạo Network
-  # --------------------------------------------------------------------
   deploy:
     name: "Deploy to VPS"
     needs: [setup-env, docker-server, docker-client]
