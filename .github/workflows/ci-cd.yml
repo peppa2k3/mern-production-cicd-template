@@ -77,7 +77,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ steps.node.outputs.version }}
-          cache: npm
+# Add the below script if you need measure keys cache
+          # cache: npm
+          # cache-dependency-path: |
+          #   ${{ env.SERVER_DIR }}/package-lock.json
+          #   ${{ env.CLIENT_DIR }}/package-lock.json
 
       - name: "Server: install, lint, test, build check"
         working-directory: ${{ env.SERVER_DIR }}
