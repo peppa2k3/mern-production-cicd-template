@@ -169,47 +169,43 @@ jobs:
       group: deployment-${{ needs.setup-env.outputs.target_env }}
       cancel-in-progress: false
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Sync deployment files to VPS
-        uses: appleboy/scp-action@v1
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          port: ${{ secrets.VPS_PORT }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
-          source: "docker-compose.yml,deployment/scripts/*"
-          target: ${{ secrets.VPS_DEPLOY_PATH }}
-          strip_components: 0
-          overwrite: true
-
-      - name: Execute Deployment & Auto-Create Network
+      - name: Execute Deployment
         uses: appleboy/ssh-action@v1.2.1
         env:
-          DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
-          DEPLOY_COMMIT_SHA: ${{ github.sha }}
-          TAG_PREFIX: ${{ needs.setup-env.outputs.tag_prefix }}
-          TRAEFIK_NETWORK: ${{ vars.TRAEFIK_NETWORK || 'web' }}
+          REGISTRY: ${{ env.REGISTRY }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          PREFIX: ${{ needs.setup-env.outputs.tag_prefix }}
         with:
           host: ${{ secrets.VPS_HOST }}
           port: ${{ secrets.VPS_PORT }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
-          command_timeout: 15m
-          envs: DEPLOY_PATH,DEPLOY_COMMIT_SHA,TAG_PREFIX,TRAEFIK_NETWORK
+          envs: REGISTRY,REPO,SHA,PREFIX
           script: |
             set -Eeuo pipefail
-
-            # 1. Khởi tạo Docker Network nếu chưa tồn tại
-            echo "Checking Docker network: ${TRAEFIK_NETWORK}..."
-            docker network create "${TRAEFIK_NETWORK}" 2>/dev/null || echo "Network '${TRAEFIK_NETWORK}' already exists."
-
-            # 2. Cấp quyền & chạy script deploy
-            chmod +x "${DEPLOY_PATH}/deployment/scripts/"*.sh
-            SHORT_SHA="$(echo "${DEPLOY_COMMIT_SHA}" | cut -c1-7)"
             
-            IMAGE_TAG="${TAG_PREFIX}sha-${SHORT_SHA}" \
-            COMMIT_SHA="${DEPLOY_COMMIT_SHA}" \
-            DEPLOY_PATH="${DEPLOY_PATH}" \
-              "${DEPLOY_PATH}/deployment/scripts/deploy.sh"
+            # 1. Tính toán Tên Image giống với logic ở job build
+            OWNER_REPO=$(echo "$REPO" | tr '[:upper:]' '[:lower:]')
+            SHORT_SHA=$(echo "$SHA" | cut -c1-7)
+            IMAGE_TAG="${PREFIX}sha-${SHORT_SHA}"
+
+            IMAGE_SERVER="${REGISTRY}/${OWNER_REPO}-server:${IMAGE_TAG}"
+            IMAGE_CLIENT="${REGISTRY}/${OWNER_REPO}-client:${IMAGE_TAG}"
+
+            # 2. Truy cập vào thư mục trên VPS & Cập nhật file nếu cần
+            cd ${{ secrets.VPS_DEPLOY_PATH }}
+            git pull || echo "Not a git repository, skipping git pull"
+
+            # 3. Cập nhật version Image vào file .env
+            # Lưu ý: Nếu trong docker-compose.yml của bạn đang đặt tên biến là IMAGE_BE và IMAGE_FE
+            # thì hãy sửa đoạn 'IMAGE_SERVER' và 'IMAGE_CLIENT' thành 'IMAGE_BE' và 'IMAGE_FE' tương ứng.
+            sed -i "s|IMAGE_SERVER=.*|IMAGE_SERVER=${IMAGE_SERVER}|" .env
+            sed -i "s|IMAGE_CLIENT=.*|IMAGE_CLIENT=${IMAGE_CLIENT}|" .env
+
+            # 4. Khởi động lại hệ thống với image mới nhất
+            docker compose pull
+            docker compose up -d
+            
+            # 5. Dọn dẹp các bản build/image rác không còn sử dụng
+            docker image prune -f
