@@ -38,4 +38,5 @@ USER appuser
 EXPOSE 5000
 
 # Verify this matches the project's actual "scripts.start" in package.json.
-CMD ["node", "src/server.js"]
+
+ENTRYPOINT ["/app/entrypoint.sh"]

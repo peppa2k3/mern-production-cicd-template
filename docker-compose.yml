@@ -5,8 +5,7 @@ services:
     env_file:
       - .env
     networks:
-      - internal
-      - edge
+      - web
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:5000/api/v1/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 15s
@@ -15,19 +14,20 @@ services:
       start_period: 30s
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.${APP_NAME}-server.rule=Host(`apidemo.techreview.io.vn`)"
+      - "traefik.http.routers.${APP_NAME}-server.rule=Host(`${APP_DOMAIN}`)&& PathPrefix(`/api/v1`)"
       - "traefik.http.routers.${APP_NAME}-server.entrypoints=websecure"
       - "traefik.http.routers.${APP_NAME}-server.tls.certresolver=letsencrypt"
       - "traefik.http.services.${APP_NAME}-server.loadbalancer.server.port=5000"
-
+      # Ưu tiên API router
+      - "traefik.http.routers.techreview-api.priority=100"
   client:
     image: ghcr.io/${GHCR_OWNER}/${GHCR_REPO}-client:${IMAGE_TAG}
     restart: unless-stopped
     depends_on:
       - server
     networks:
-      - internal
-      - edge
+      - web
+
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
       interval: 15s
@@ -40,25 +40,8 @@ services:
       - "traefik.http.routers.${APP_NAME}.entrypoints=websecure"
       - "traefik.http.routers.${APP_NAME}.tls.certresolver=letsencrypt"
       - "traefik.http.services.${APP_NAME}.loadbalancer.server.port=80"
-
-  mongo:
-    image: mongo:7
-    restart: unless-stopped
-    # Khởi tạo User/Password cho MongoDB khớp với MONGO_URI trong .env
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: admin1
-      MONGO_INITDB_ROOT_PASSWORD: pass1
-    volumes:
-      - mongo_data:/data/db
-    networks:
-      - internal
-
-volumes:
-  mongo_data:
-
+      # Thấp hơn API router
+      - "traefik.http.routers.techreview.priority=10"
 networks:
-  internal:
-    driver: bridge
-  edge:
+  web:
     external: true
-    name: ${TRAEFIK_NETWORK}
