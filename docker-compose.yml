@@ -4,14 +4,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    ports:
-      # Map port 5000 ra ngoài host VPS để deploy.sh hoặc curl từ VPS kiểm tra được
-      - "5000:5000"
     networks:
       - internal
       - edge
     healthcheck:
-      # Kiểm tra cổng 5000 (khớp với PORT=5000 trong .env)
+      # Kiểm tra cổng 5000 bên trong container
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:5000/api/v1/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 15s
       timeout: 5s
@@ -25,9 +22,6 @@ services:
     restart: unless-stopped
     depends_on:
       - server
-    ports:
-      # Map port 3000 ra host để khớp với script kiểm tra healthcheck port 3000 (nếu script deploy.sh gọi port 3000)
-      - "3000:80"
     networks:
       - internal
       - edge
