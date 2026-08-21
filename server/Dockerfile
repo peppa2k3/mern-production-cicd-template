@@ -35,7 +35,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 USER appuser
-EXPOSE 3000
+EXPOSE 5000
 
 # Verify this matches the project's actual "scripts.start" in package.json.
 CMD ["node", "src/server.js"]
