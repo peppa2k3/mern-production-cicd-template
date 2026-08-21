@@ -185,20 +185,21 @@ jobs:
           strip_components: 0
           overwrite: true
 
-      # 2. Chạy script deploy.sh trên VPS
+# 2. Chạy script deploy.sh trên VPS
       - name: Execute Deployment
         uses: appleboy/ssh-action@v1.2.1
         env:
           DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
           DEPLOY_COMMIT_SHA: ${{ github.sha }}
           TAG_PREFIX: ${{ needs.setup-env.outputs.tag_prefix }}
+          HEALTH_URL: "https://apidemo.techreview.io.vn/api/v1/health"
         with:
           host: ${{ secrets.VPS_HOST }}
           port: ${{ secrets.VPS_PORT }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           command_timeout: 15m
-          envs: DEPLOY_PATH,DEPLOY_COMMIT_SHA,TAG_PREFIX
+          envs: DEPLOY_PATH,DEPLOY_COMMIT_SHA,TAG_PREFIX,HEALTH_URL
           script: |
             set -Eeuo pipefail
             chmod +x "${DEPLOY_PATH}/deployment/scripts/"*.sh
@@ -209,4 +210,5 @@ jobs:
             IMAGE_TAG="${IMAGE_TAG}" \
             COMMIT_SHA="${DEPLOY_COMMIT_SHA}" \
             DEPLOY_PATH="${DEPLOY_PATH}" \
+            HEALTH_URL="${HEALTH_URL}" \
               "${DEPLOY_PATH}/deployment/scripts/deploy.sh"
