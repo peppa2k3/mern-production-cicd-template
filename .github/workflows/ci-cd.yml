@@ -192,7 +192,7 @@ jobs:
           DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
           DEPLOY_COMMIT_SHA: ${{ github.sha }}
           TAG_PREFIX: ${{ needs.setup-env.outputs.tag_prefix }}
-          HEALTH_URL: "https://apidemo.techreview.io.vn/api/v1/health"
+          HEALTH_URL: ${{ vars.HEALTH_URL }} # <-- Đọc từ GitHub Variables
         with:
           host: ${{ secrets.VPS_HOST }}
           port: ${{ secrets.VPS_PORT }}
