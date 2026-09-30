@@ -21,7 +21,7 @@ COPY . .
 # Build-time variables get baked into the static bundle at build time.
 # These are NOT secrets — never put runtime secrets (JWT_SECRET, MONGO_URI)
 # here; they belong on the server container only.
-ARG VITE_API_URL=/api
+ARG VITE_API_URL=/api/v1
 ENV VITE_API_URL=${VITE_API_URL}
 
 RUN npm run build
