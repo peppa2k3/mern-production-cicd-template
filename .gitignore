@@ -7,3 +7,11 @@ build/
 *.log
 .DS_Store
 .deployment/
+.env.*
+!.env.example
+server/logs/*
+!server/logs/.gitkeep
+server/uploads/*
+!server/uploads/.gitkeep
+test-deploy-*/
+template-source/

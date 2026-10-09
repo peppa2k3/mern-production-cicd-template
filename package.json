@@ -1,0 +1,11 @@
+{
+  "name": "mern-production-cicd-template",
+  "private": true,
+  "scripts": {
+    "init:env": "node scripts/init-env.cjs",
+    "icons": "node scripts/generate-pwa-icons.cjs",
+    "local:up": "docker compose --env-file server/.env up -d --build --wait",
+    "local:stop": "docker compose --env-file server/.env stop",
+    "local:logs": "docker compose --env-file server/.env logs -f server client"
+  }
+}

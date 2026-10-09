@@ -47,7 +47,7 @@ async function seedSuperAdmin(roles) {
     role: roles[ROLES.SUPER_ADMIN]._id,
     isActive: true,
   });
-  console.log(`Super admin created: ${env.superAdmin.email} / ${env.superAdmin.password}`);
+  console.log(`Super admin created: ${env.superAdmin.email}`);
   return admin;
 }
 
@@ -152,6 +152,8 @@ async function seedDemoKOL(roles, products) {
 }
 
 async function run() {
+  if (env.nodeEnv === 'production') throw new Error('Demo seed is disabled in production; use seed:roles and set-admin');
+  if (!env.superAdmin.password) throw new Error('Set SUPER_ADMIN_PASSWORD before running demo seed');
   await mongoose.connect(env.mongoUri);
   console.log('Connected to MongoDB for seeding');
 

@@ -17,7 +17,7 @@ const authenticate = async (req, res, next) => {
     const payload = jwt.verify(token, env.jwt.accessSecret);
 
     const user = await User.findById(payload.sub).populate('role');
-    if (!user || !user.isActive) {
+    if (payload.kind !== 'access' || !user || !user.isActive || payload.sessionVersion !== (user.sessionVersion || 0)) {
       throw AppError.unauthorized('Account is inactive or not found');
     }
 
@@ -39,7 +39,7 @@ const optionalAuthenticate = async (req, res, next) => {
     const token = header.split(' ')[1];
     const payload = jwt.verify(token, env.jwt.accessSecret);
     const user = await User.findById(payload.sub).populate('role');
-    if (user && user.isActive) req.user = user;
+    if (payload.kind === 'access' && user && user.isActive && payload.sessionVersion === (user.sessionVersion || 0)) req.user = user;
     next();
   } catch (err) {
     next();

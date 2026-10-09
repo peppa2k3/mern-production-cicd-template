@@ -86,7 +86,7 @@ class AuthService {
     }
 
     const user = await User.findById(payload.sub).populate('role');
-    if (!user || !user.isActive) throw AppError.unauthorized('Invalid session');
+    if (!user || !user.isActive || payload.sessionVersion !== (user.sessionVersion || 0)) throw AppError.unauthorized('Invalid session');
 
     const tokenHash = hashToken(refreshToken);
     const stored = user.refreshTokens.find((t) => t.tokenHash === tokenHash);
@@ -119,6 +119,7 @@ class AuthService {
 
     fullUser.passwordHash = await bcrypt.hash(newPassword, 12);
     fullUser.refreshTokens = []; // force re-login on all devices
+    fullUser.sessionVersion = (fullUser.sessionVersion || 0) + 1;
     await fullUser.save();
   }
 }

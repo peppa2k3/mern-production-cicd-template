@@ -14,15 +14,18 @@ ARG NODE_VERSION=22-alpine
 FROM node:${NODE_VERSION} AS build
 WORKDIR /app
 COPY package*.json ./
-RUN if [ -f package-lock.json ]; then npm ci; \
-    else npm install; fi
+RUN npm ci
 COPY . .
 
 # Build-time variables get baked into the static bundle at build time.
 # These are NOT secrets — never put runtime secrets (JWT_SECRET, MONGO_URI)
 # here; they belong on the server container only.
-ARG VITE_API_URL=/api/v1
-ENV VITE_API_URL=${VITE_API_URL}
+ARG VITE_API_BASE_URL=/api/v1
+ARG VITE_SOCKET_URL=/
+ARG VITE_SITE_NAME="Affiliate Hub"
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+ENV VITE_SOCKET_URL=${VITE_SOCKET_URL}
+ENV VITE_SITE_NAME=${VITE_SITE_NAME}
 
 RUN npm run build
 

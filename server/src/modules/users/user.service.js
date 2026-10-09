@@ -46,7 +46,12 @@ class UserService {
   }
 
   async update(id, data, actor) {
-    const user = await userRepository.updateById(id, data);
+    const update = { $set: data };
+    if (data.role !== undefined || data.isActive !== undefined) {
+      update.$set = { ...data, refreshTokens: [] };
+      update.$inc = { sessionVersion: 1 };
+    }
+    const user = await userRepository.updateById(id, update);
     if (!user) throw AppError.notFound('User not found');
 
     await activityLogService.log({
@@ -78,7 +83,7 @@ class UserService {
   }
 
   async setActive(id, isActive, actor) {
-    const user = await userRepository.updateById(id, { isActive });
+    const user = await userRepository.updateById(id, { $set: { isActive, refreshTokens: [] }, $inc: { sessionVersion: 1 } });
     if (!user) throw AppError.notFound('User not found');
 
     await activityLogService.log({

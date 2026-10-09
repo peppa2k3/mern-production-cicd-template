@@ -10,6 +10,7 @@ const userSchema = new mongoose.Schema(
     role: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', required: true },
     avatar: { type: String },
     isActive: { type: Boolean, default: true },
+    sessionVersion: { type: Number, default: 0 },
     lastLoginAt: { type: Date },
     // hashed refresh tokens currently issued to this user (supports multiple
     // devices; each is rotated/invalidated independently)

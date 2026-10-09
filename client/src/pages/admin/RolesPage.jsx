@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Plus, Pencil, Trash2, Lock } from 'lucide-react';
 import SEO from '@/components/common/SEO';
@@ -38,10 +38,12 @@ export default function RolesPage() {
   const [selectedPerms, setSelectedPerms] = useState([]);
   const { register, handleSubmit, reset } = useForm();
 
-  useEffect(() => {
-    reset(editing ? { name: editing.name, displayName: editing.displayName, description: editing.description } : { name: '', displayName: '', description: '' });
-    setSelectedPerms(editing?.permissions || []);
-  }, [editing, dialogOpen, reset]);
+  const openDialog = (role = null) => {
+    setEditing(role);
+    reset(role ? { name: role.name, displayName: role.displayName, description: role.description } : { name: '', displayName: '', description: '' });
+    setSelectedPerms(role?.permissions || []);
+    setDialogOpen(true);
+  };
 
   const togglePerm = (perm) => {
     setSelectedPerms((prev) => (prev.includes(perm) ? prev.filter((p) => p !== perm) : [...prev, perm]));
@@ -61,7 +63,7 @@ export default function RolesPage() {
       <SEO title="Vai trò & Quyền" />
       <div className="flex items-center justify-between">
         <h1 className="font-display text-2xl font-bold">Vai trò & Phân quyền</h1>
-        <Button onClick={() => { setEditing(null); setDialogOpen(true); }}>
+        <Button onClick={() => openDialog()}>
           <Plus size={16} /> Thêm vai trò
         </Button>
       </div>
@@ -80,7 +82,7 @@ export default function RolesPage() {
                   <p className="mt-0.5 font-mono text-xs text-ink-700">{role.name}</p>
                 </div>
                 <div className="flex gap-1">
-                  <Button variant="ghost" size="icon" onClick={() => { setEditing(role); setDialogOpen(true); }}>
+                  <Button variant="ghost" size="icon" onClick={() => openDialog(role)}>
                     <Pencil size={14} />
                   </Button>
                   {!role.isSystem && (

@@ -1,78 +1,43 @@
 #!/usr/bin/env bash
-#
-# cleanup-images.sh — safely prunes old immutable image versions on the
-# VPS so disk usage doesn't grow unbounded. Intended to be run
-# periodically (e.g. a weekly cron job), NOT as part of every deployment.
-#
-# Safety rules:
-#   - never removes the currently running tag (.deployment/current)
-#   - never removes the previous tag (.deployment/previous), kept for rollback
-#   - keeps the KEEP_IMAGE_VERSIONS most recent tags beyond those two
-#   - only touches the repositories listed in IMAGE_REPOSITORIES — never a
-#     blanket `docker system prune -a`, which could remove images
-#     belonging to other projects sharing this VPS
-#
-# Usage:
-#   DEPLOY_PATH=/srv/apps/myapp \
-#   IMAGE_REPOSITORIES="ghcr.io/org/app-server ghcr.io/org/app-client" \
-#   ./cleanup-images.sh
-#
-# Add DRY_RUN=true to preview what would be removed without removing it.
-
+# Only remove unreferenced app images. Every retained verified release is protected.
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=./common.sh
+# shellcheck source=deployment/scripts/common.sh
 source "$SCRIPT_DIR/common.sh"
-
-: "${DEPLOY_PATH:?DEPLOY_PATH is required}"
-: "${IMAGE_REPOSITORIES:?IMAGE_REPOSITORIES is required, e.g. 'ghcr.io/org/app-server ghcr.io/org/app-client'}"
+: "${DEPLOY_PATH:?Set absolute deploy root}"
+: "${IMAGE_REPOSITORIES:?Set space-separated application image repositories}"
+[[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9/_-]+$ && "$DEPLOY_PATH" != / ]] || die 'Invalid deploy root'
+[[ -d "$DEPLOY_PATH/releases" && -f "$DEPLOY_PATH/shared/current-images.env" ]] || die 'Verified release state missing'
 KEEP_IMAGE_VERSIONS="${KEEP_IMAGE_VERSIONS:-5}"
-DRY_RUN="${DRY_RUN:-false}"
-
-cd "$DEPLOY_PATH" || die "Deployment directory not found: $DEPLOY_PATH"
+DRY_RUN="${DRY_RUN:-true}"
+[[ "$KEEP_IMAGE_VERSIONS" =~ ^[0-9]+$ && "$DRY_RUN" =~ ^(true|false)$ ]] || die 'Invalid retention or dry-run setting'
 require_cmd docker
-
-CURRENT_TAG="$(read_state_value "$STATE_DIR/current" DEPLOYED_IMAGE_TAG || true)"
-PREVIOUS_TAG="$(read_state_value "$STATE_DIR/previous" DEPLOYED_IMAGE_TAG || true)"
-log "Protected tags — current: ${CURRENT_TAG:-none}, previous: ${PREVIOUS_TAG:-none}"
-log "Retention: keep ${KEEP_IMAGE_VERSIONS} most recent tag(s) per repository beyond the protected ones."
-[ "$DRY_RUN" = "true" ] && log "DRY_RUN=true — no images will actually be removed."
-
+# Share the same lock with apply/verify so cleanup cannot remove candidate images.
+exec 9>"$DEPLOY_PATH/shared/deploy.lock"
+flock -n 9 || die 'Deployment action running'
+protected=()
+while IFS= read -r -d '' file; do
+  for key in SERVER_IMAGE CLIENT_IMAGE CANDIDATE_SERVER_IMAGE CANDIDATE_CLIENT_IMAGE PREVIOUS_SERVER_IMAGE PREVIOUS_CLIENT_IMAGE; do
+    value="$(read_state_value "$file" "$key")"
+    [[ -z "$value" ]] || protected+=("$value")
+  done
+done < <(find "$DEPLOY_PATH/shared" "$DEPLOY_PATH/releases" -type f \( -name '*images.env' -o -name pending-release.env \) -print0)
 for repo in $IMAGE_REPOSITORIES; do
-  log "Scanning ${repo}..."
-
-  # Newest first, excluding the floating 'latest' tag (never cleaned up here).
-  mapfile -t tags < <(docker image ls "${repo}" --format '{{.Tag}}\t{{.CreatedAt}}' \
-    | grep -v '^latest' \
-    | sort -k2 -r \
-    | awk -F'\t' '{print $1}')
-
-  if [ "${#tags[@]}" -eq 0 ]; then
-    log "No local images found for ${repo} — skipping."
-    continue
-  fi
-
+  [[ "$repo" =~ ^(ghcr\.io|docker\.io)/[a-z0-9._/-]+$ ]] || die 'Invalid application image repository'
+  listing="$(docker image ls "$repo" --format '{{.Tag}}\t{{.CreatedAt}}')"
+  mapfile -t tags < <(printf '%s\n' "$listing" | sort -k2 -r | awk -F'\t' '{print $1}')
   kept=0
   for tag in "${tags[@]}"; do
-    if [ "$tag" = "$CURRENT_TAG" ] || [ "$tag" = "$PREVIOUS_TAG" ]; then
-      log "Keeping ${repo}:${tag} (protected — current or previous deployment)"
-      continue
-    fi
+    [[ "$tag" =~ ^[a-f0-9]{40}$ ]] || continue
+    image="$repo:$tag"; keep=false
+    for ref in "${protected[@]}"; do [[ "$image" != "$ref" ]] || keep=true; done
+    [[ "$keep" != true ]] || continue
     kept=$((kept + 1))
-    if [ "$kept" -le "$KEEP_IMAGE_VERSIONS" ]; then
-      log "Keeping ${repo}:${tag} (within retention window)"
-      continue
-    fi
-
-    if [ "$DRY_RUN" = "true" ]; then
-      log "[dry-run] Would remove ${repo}:${tag}"
+    (( kept > KEEP_IMAGE_VERSIONS )) || continue
+    if [[ "$DRY_RUN" == true ]]; then
+      log "Would remove unreferenced image $image"
     else
-      log "Removing ${repo}:${tag}..."
-      docker image rm "${repo}:${tag}" >/dev/null 2>&1 \
-        && log "  removed ${repo}:${tag}" \
-        || log "  skip ${repo}:${tag} (in use or already removed)"
+      docker image rm "$image" || log "Image in use; retained $image"
     fi
   done
 done
-
-log "Cleanup complete."

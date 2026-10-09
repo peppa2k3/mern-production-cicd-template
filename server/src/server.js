@@ -3,11 +3,13 @@ const app = require('./app');
 const env = require('./config/env');
 const logger = require('./config/logger');
 const connectDatabase = require('./config/database');
+const { initializeStorage } = require('./config/storage');
 const { initSocket } = require('./config/socket');
 require('./jobs'); // registers cron jobs (node-cron)
 
 async function bootstrap() {
   await connectDatabase();
+  await initializeStorage();
 
   const server = http.createServer(app);
   initSocket(server);
@@ -30,4 +32,7 @@ async function bootstrap() {
   });
 }
 
-bootstrap();
+bootstrap().catch((error) => {
+  logger.error(`Startup failed: ${error.message}`);
+  process.exit(1);
+});

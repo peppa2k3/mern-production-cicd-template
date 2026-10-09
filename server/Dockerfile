@@ -7,11 +7,7 @@ WORKDIR /app
 
 COPY package*.json ./
 
-RUN if [ -f package-lock.json ]; then \
-      npm ci --omit=dev; \
-    else \
-      npm install --omit=dev; \
-    fi
+RUN npm ci --omit=dev
 
 
 # ---- Runtime ----
@@ -36,8 +32,10 @@ COPY entrypoint.sh /app/entrypoint.sh
 
 # IMPORTANT:
 # Make entrypoint executable and owned by appuser
-RUN chmod 755 /app/entrypoint.sh && \
-    chown appuser:appgroup /app/entrypoint.sh
+RUN sed -i 's/\r$//' /app/entrypoint.sh && \
+    chmod 755 /app/entrypoint.sh && \
+    mkdir -p /app/uploads /app/logs && \
+    chown -R appuser:appgroup /app/uploads /app/logs
 
 USER appuser
 

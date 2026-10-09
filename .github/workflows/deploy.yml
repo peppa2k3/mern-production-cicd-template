@@ -1,0 +1,139 @@
+name: Production deployment
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'client/**'
+      - 'scripts/**'
+      - 'deployment/scripts/**'
+      - 'docker-compose*.yml'
+      - '.github/workflows/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+# Serialize the entire pipeline so separate apply/verify actions cannot interleave.
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+jobs:
+  changes:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      server: ${{ steps.select.outputs.server }}
+      client: ${{ steps.select.outputs.client }}
+      matrix: ${{ steps.select.outputs.matrix }}
+      repository: ${{ steps.select.outputs.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: paths
+        with:
+          filters: |
+            server:
+              - 'server/**'
+            client:
+              - 'client/**'
+            shared:
+              - 'scripts/**'
+              - 'deployment/scripts/**'
+              - 'docker-compose*.yml'
+              - '.github/workflows/**'
+      - id: select
+        env:
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+          SERVER_CHANGED: ${{ steps.paths.outputs.server }}
+          CLIENT_CHANGED: ${{ steps.paths.outputs.client }}
+          SHARED_CHANGED: ${{ steps.paths.outputs.shared }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const env = process.env;
+          const all = env.MANUAL === 'true' || env.SHARED_CHANGED === 'true';
+          const server = all || env.SERVER_CHANGED === 'true';
+          const client = all || env.CLIENT_CHANGED === 'true';
+          const component = [server && 'server', client && 'client'].filter(Boolean);
+          fs.appendFileSync(env.GITHUB_OUTPUT, `server=${server}\nclient=${client}\nmatrix=${JSON.stringify({component})}\nrepository=${env.GITHUB_REPOSITORY.toLowerCase()}\n`);
+          NODE
+  validate:
+    uses: ./.github/workflows/ci.yml
+  build:
+    needs: [changes, validate]
+    if: needs.changes.outputs.server == 'true' || needs.changes.outputs.client == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.component }}
+          push: true
+          tags: ghcr.io/${{ needs.changes.outputs.repository }}-${{ matrix.component }}:${{ github.sha }}
+          build-args: |
+            VITE_API_BASE_URL=/api/v1
+            VITE_SOCKET_URL=/
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+  deploy:
+    needs: [changes, build]
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+      VPS_USER: ${{ secrets.VPS_USER || 'deploy' }}
+      DEPLOY_ROOT: ${{ secrets.VPS_DEPLOY_PATH }}
+      RELEASE_SHA: ${{ github.sha }}
+      REPOSITORY: ${{ needs.changes.outputs.repository }}
+      SERVER_CHANGED: ${{ needs.changes.outputs.server }}
+      CLIENT_CHANGED: ${{ needs.changes.outputs.client }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure verified SSH host key
+        env:
+          PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$DEPLOY_ROOT" =~ ^/[A-Za-z0-9/_-]+$ && "$DEPLOY_ROOT" != / ]]
+          [[ "$VPS_HOST" =~ ^[A-Za-z0-9.-]+$ && "$VPS_USER" =~ ^[a-z_][a-z0-9_-]*$ && "$VPS_PORT" =~ ^[0-9]+$ ]]
+          [[ -n "$PRIVATE_KEY" && -n "$KNOWN_HOSTS" ]]
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+      - name: Stage immutable release files
+        run: |
+          set -Eeuo pipefail
+          ssh -o StrictHostKeyChecking=yes -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "umask 077; mkdir -p '$DEPLOY_ROOT/releases/$RELEASE_SHA/scripts'"
+          scp -o StrictHostKeyChecking=yes -P "$VPS_PORT" docker-compose.prod.yml "$VPS_USER@$VPS_HOST:$DEPLOY_ROOT/releases/$RELEASE_SHA/"
+          scp -o StrictHostKeyChecking=yes -P "$VPS_PORT" scripts/deploy.sh "$VPS_USER@$VPS_HOST:$DEPLOY_ROOT/releases/$RELEASE_SHA/scripts/"
+      - name: Apply application images
+        run: |
+          set -Eeuo pipefail
+          server_image=-; client_image=-
+          [[ "$SERVER_CHANGED" != true ]] || server_image="ghcr.io/$REPOSITORY-server:$RELEASE_SHA"
+          [[ "$CLIENT_CHANGED" != true ]] || client_image="ghcr.io/$REPOSITORY-client:$RELEASE_SHA"
+          ssh -o StrictHostKeyChecking=yes -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "bash '$DEPLOY_ROOT/releases/$RELEASE_SHA/scripts/deploy.sh' apply '$DEPLOY_ROOT' '$RELEASE_SHA' '$server_image' '$client_image'"
+      - name: Verify HTTPS and promote release state
+        run: |
+          ssh -o StrictHostKeyChecking=yes -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "bash '$DEPLOY_ROOT/releases/$RELEASE_SHA/scripts/deploy.sh' verify '$DEPLOY_ROOT' '$RELEASE_SHA'"
+      - name: Roll back pending release on failure
+        if: failure()
+        run: |
+          ssh -o StrictHostKeyChecking=yes -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "bash '$DEPLOY_ROOT/releases/$RELEASE_SHA/scripts/deploy.sh' rollback '$DEPLOY_ROOT' '$RELEASE_SHA'"
+      - name: Remove temporary SSH credentials
+        if: always()
+        run: rm -f "$HOME/.ssh/id_ed25519"

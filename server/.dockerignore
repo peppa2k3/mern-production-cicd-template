@@ -17,3 +17,5 @@ __tests__
 Dockerfile
 .dockerignore
 docker-compose*.yml
+logs
+uploads

@@ -1,65 +1,67 @@
 # MERN Production CI/CD Template
 
-A reusable, production-grade CI/CD pipeline for MERN apps (or any
-Node.js API + static/SPA frontend): push to `main` → lint/test/build →
-Docker Buildx → GitHub Container Registry → SSH deploy to a VPS →
-health check → automatic rollback on failure.
+Ứng dụng Affiliate/KOL dùng React/Vite (`client/`), Express CommonJS (`server/`) và MongoDB. Các mẫu trong [template-source](template-source/) đã được tích hợp vào source hiện tại, ưu tiên quy trình triển khai và lưu trữ của mẫu.
 
-Built to be dropped into future projects with minimal changes — see
-[`docs/adopting-this-template.md`](docs/adopting-this-template.md) for
-what to check first, and [`docs/deployment.md`](docs/deployment.md)
-for full VPS setup, secrets, rollback, and security details.
+## Chạy local
 
-## What's in here
+Yêu cầu Node.js 22 và Docker Engine + Compose v2.
 
-```
-.github/workflows/ci-cd.yml           Lint/test/build -> Buildx -> GHCR -> SSH deploy
-server/Dockerfile                     Multi-stage Node API image, non-root, pinned LTS
-server/.dockerignore
-client/Dockerfile                     Multi-stage Vite build -> Nginx static serve
-client/.dockerignore
-client/nginx.conf                     SPA fallback, gzip, /api reverse proxy
-docker-compose.yml                    IMAGE_TAG-driven, Traefik labels, Mongo volume
-docker-compose.override.example.yml   Alternative for VPS without Traefik
-.env.example                          Secret-free — copy to .env on the VPS only
-deployment/scripts/
-  common.sh                           Shared helpers + attempt_deploy/write_state
-  deploy.sh                           Validate -> pull -> up -> health-check -> rollback
-  rollback.sh                         Manual rollback to previous or an explicit tag
-  health-check.sh                     Standalone retrying HTTP health check
-  cleanup-images.sh                   Safe old-image pruning (never touches current/previous)
-docs/
-  deployment.md                       First-time VPS setup, secrets, security review, checklist
-  adopting-this-template.md           How to adapt this into a specific existing repo
+```sh
+npm run init:env
+npm run local:up
+docker compose --env-file server/.env exec server npm run seed:roles
 ```
 
-## Quick start
+Mở **http://localhost:8080**. Compose local gồm MongoDB **4.0.28**, MinIO, API cổng nội bộ **5000** và Nginx. MongoDB/MinIO dùng volume riêng; chỉ web và MinIO bind loopback. Muốn đổi cổng: đặt `WEB_PORT`, `MINIO_API_PORT`, `MINIO_CONSOLE_PORT` trong `server/.env`.
 
-1. Read [`docs/adopting-this-template.md`](docs/adopting-this-template.md)
-   and adjust the Dockerfiles/paths for the target repo's actual stack.
-2. Follow [`docs/deployment.md`](docs/deployment.md) to set up the VPS
-   once (Docker, a dedicated deploy user, GHCR auth, `.env`, Traefik or
-   its standalone alternative).
-3. Add the five secrets under a GitHub Environment named `production`:
-   `VPS_HOST`, `VPS_PORT`, `VPS_USER`, `VPS_SSH_PRIVATE_KEY`,
-   `VPS_DEPLOY_PATH`.
-4. `git push origin main`.
+Script khởi tạo sinh secret ngẫu nhiên, không in secret và giữ nguyên các file `.env` đã có. Với repo đã có env, bổ sung key còn thiếu từ [server/.env.example](server/.env.example), nhất là `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` và `MINIO_BUCKET`. Không ghi đè secret hiện tại.
 
-## Design principles this template follows
+Đăng ký tài khoản trên giao diện, sau đó chủ động cấp quyền cho email đã tồn tại:
 
-- **Immutable deploys**: every production deployment is pinned to
-  `sha-<commit>`, never a moving tag.
-- **No fragile file mutation**: the image tag is passed as an
-  environment variable Compose interpolates — no `sed` hacks against
-  `docker-compose.yml`.
-- **Real health checks**: retried HTTP checks against an actual
-  endpoint, not "container is running."
-- **Mandatory rollback**: any failed deployment automatically attempts
-  to restore the last known-good tag, and CI still reports failure so
-  it isn't silently swallowed.
-- **Idempotent**: redeploying the same tag twice is safe.
-- **Nothing faked**: lint/test/build steps are discovered from each
-  `package.json` — a missing script is skipped with a clear log line,
-  never faked as passing.
-- **Secrets stay on the VPS**: `.env` is never committed, never synced
-  by CI, and never baked into an image.
+```sh
+docker compose --env-file server/.env exec server npm run set-admin -- your-email@example.com super_admin
+```
+
+Đăng ký công khai vẫn tạo KOL chờ duyệt. Container không tự tạo admin hoặc seed dữ liệu demo. `seed:roles` chỉ thêm role chưa có, giữ quyền đã tùy chỉnh. Muốn dữ liệu demo **chỉ ở local**, đặt `SUPER_ADMIN_PASSWORD` riêng và chạy `npm run seed` trong server container.
+
+Chạy trực tiếp Node/Vite: `npm ci` trong từng thư mục rồi `npm run dev`; cấu hình `MONGO_URI` thích hợp. `UPLOAD_STORAGE=local` giữ cơ chế tệp trên đĩa; Compose chọn `minio`. Vite proxy `/api`, `/uploads` và Socket.IO tới API; frontend build dùng `VITE_API_BASE_URL=/api/v1`, `VITE_SOCKET_URL=/`.
+
+## Những phần đã tích hợp
+
+- [docker-compose.yml](docker-compose.yml): bốn service local/CI, MongoDB 4.0 và MinIO.
+- [docker-compose.prod.yml](docker-compose.prod.yml): **chỉ server/client**, nối Traefik và private storage network đã tồn tại trên VPS.
+- [scripts/deploy.sh](scripts/deploy.sh): `apply → verify → rollback`, ref image full SHA, release/state riêng và chỉ promote sau kiểm tra HTTPS.
+- [.github/workflows/ci.yml](.github/workflows/ci.yml): lint/build, kiểm thử deploy mô phỏng và smoke thật trên Compose local.
+- [.github/workflows/deploy.yml](.github/workflows/deploy.yml): push `main` hoặc manual → validate → build/push GHCR → SSH apply → verify; hỗ trợ chỉ build phần thay đổi. `develop`/PR chạy CI.
+- [scripts/init-env.cjs](scripts/init-env.cjs), [server/scripts/set-admin.js](server/scripts/set-admin.js): secret ngẫu nhiên và bootstrap admin bằng thao tác vận hành có audit.
+- Upload MinIO: metadata ở MongoDB, tệp ở bucket riêng; URL media cùng origin qua API, không cần public bucket. Tệp sản phẩm giữ hành vi public của ứng dụng Affiliate.
+- JWT access giữ trong bộ nhớ frontend; refresh cookie httpOnly xoay vòng với ID riêng. Đổi mật khẩu, role hoặc trạng thái tài khoản thu hồi phiên cũ.
+- [scripts/generate-pwa-icons.cjs](scripts/generate-pwa-icons.cjs), manifest và icon web app. Chạy `npm ci --prefix server` rồi `npm run icons` để dựng lại icon. Chưa có service worker/offline cache.
+
+`template-source` là nguồn tham chiếu được giữ nguyên. Các tài liệu của mẫu mô tả một ứng dụng DND Drop Space khác và nhiều file không được cung cấp. Note/folder/tag, quota, collaboration, OTP/Google Login, theme và i18n của ứng dụng đó **chưa được triển khai** từ bộ mẫu này; không coi các trạng thái hoàn tất trong tài liệu nguồn là kết quả của repo hiện tại. Theo dõi phạm vi ở [docs/template-integration.md](docs/template-integration.md).
+
+## Production
+
+Đọc [DEPLOY_GUIDES.md](DEPLOY_GUIDES.md) và [docs/deployment.md](docs/deployment.md). Secret runtime nằm tại `<deploy-root>/shared/server.env` trên VPS, theo [.env.example](.env.example), quyền `600`; CI chỉ chuyển Compose/script và image. Domain, network, entrypoint và cert resolver đều cấu hình theo VPS thực.
+
+API readiness `GET /api/health` và `GET /api/v1/health` ping MongoDB và kiểm tra bucket MinIO; `/health` là liveness. Frontend và API phải có HTTPS hoạt động trước khi verify release.
+
+Rollback chỉ khôi phục image ứng dụng. Khi chuyển bản cũ, cần backup MongoDB và tệp, chuẩn bị network/state và migration tệp riêng; không dùng volume từng chạy MongoDB mới hơn với MongoDB 4.0. Thay đổi định dạng JWT khiến phiên cũ cần đăng nhập lại. Chưa có xác nhận deploy GitHub/VPS thực.
+
+## Kiểm tra
+
+```sh
+npm ci --prefix server
+npm ci --prefix client
+npm run lint --prefix server
+npm run lint --prefix client
+npm run test:config --prefix server
+npm run build --prefix client
+bash scripts/test-deploy-flow.sh
+docker compose --env-file server/.env exec server npm run seed:roles
+docker compose --env-file server/.env exec -e SMOKE_BASE_URL=http://client server npm run test:smoke
+docker compose --env-file server/.env exec server node scripts/test-readiness.js
+git diff --check
+```
+
+Smoke test tạo/xóa tài khoản và tệp kiểm thử riêng, chỉ được dùng với local/CI. `npm run local:stop` dừng service và giữ dữ liệu.
